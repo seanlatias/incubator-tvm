@@ -28,11 +28,11 @@ def check_data_size(mod, data):
     assert len(data) == len(mod.functions) - 1
     for key, value in mod.functions.items():
         if key.name_hint != "main":
-            assert len(data[key]["inputs"]) == len(value.params)
+            assert len(data[key.name_hint]["inputs"]) == len(value.params)
             if isinstance(value.body, relay.Tuple):
-                assert len(data[key]["outputs"]) == len(value.body.fields)
+                assert len(data[key.name_hint]["outputs"]) == len(value.body.fields)
             else:
-                assert len(data[key]["outputs"]) == 1
+                assert len(data[key.name_hint]["outputs"]) == 1
 
 def test_simple_graph():
     # A module with two subgraphs
@@ -72,13 +72,13 @@ def test_simple_graph():
 
     # Check the number and orders
     check_data_size(mod, data)
-    tvm.testing.assert_allclose(data[g0]["inputs"][0].asnumpy(), x_data)
-    tvm.testing.assert_allclose(data[g0]["inputs"][1].asnumpy(), y_data)
-    tvm.testing.assert_allclose(data[g0]["outputs"][0].asnumpy(), x_data + y_data)
-    tvm.testing.assert_allclose(data[g0]["outputs"][1].asnumpy(), x_data - y_data)
-    tvm.testing.assert_allclose(data[g1]["inputs"][0].asnumpy(), x_data + y_data)
-    tvm.testing.assert_allclose(data[g1]["inputs"][1].asnumpy(), z_data)
-    tvm.testing.assert_allclose(data[g1]["outputs"][0].asnumpy(), x_data + y_data - z_data)
+    tvm.testing.assert_allclose(data["g0"]["inputs"][0].asnumpy(), x_data)
+    tvm.testing.assert_allclose(data["g0"]["inputs"][1].asnumpy(), y_data)
+    tvm.testing.assert_allclose(data["g0"]["outputs"][0].asnumpy(), x_data + y_data)
+    tvm.testing.assert_allclose(data["g0"]["outputs"][1].asnumpy(), x_data - y_data)
+    tvm.testing.assert_allclose(data["g1"]["inputs"][0].asnumpy(), x_data + y_data)
+    tvm.testing.assert_allclose(data["g1"]["inputs"][1].asnumpy(), z_data)
+    tvm.testing.assert_allclose(data["g1"]["outputs"][0].asnumpy(), x_data + y_data - z_data)
 
 def test_mobilenet_dnnl():
     if not tvm.get_global_func("relay.ext.dnnl", True):

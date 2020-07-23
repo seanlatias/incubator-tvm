@@ -36,6 +36,7 @@
 #include "../../utils.h"
 
 #ifdef USE_JSON_RUNTIME
+#include "../../../../relay/analysis/get_calibration_data.h"
 #include "../../../../runtime/contrib/json/json_node.h"
 #include "../codegen_json/codegen_json.h"
 #else
@@ -431,9 +432,23 @@ class DNNLJSONSerializer : public backend::contrib::JSONSerializer {
   using JSONGraphNodeEntry = tvm::runtime::json::JSONGraphNodeEntry;
 
  public:
-  DNNLJSONSerializer(const std::string& symbol, const Expr& expr) : JSONSerializer(symbol, expr) {}
+  DNNLJSONSerializer(const std::string& symbol, const Expr& expr) : JSONSerializer(symbol, expr), symbol_(symbol) {}
 
   std::vector<JSONGraphNodeEntry> VisitExpr_(const CallNode* cn) override {
+    // get calibration data and perform quantization
+    auto pass_ctx = tvm::transform::PassContext::Current();
+    auto calib_data = pass_ctx->GetConfig<CalibrationData>("relay.calibration_data");
+    if (calib_data.defined()) {
+      auto data = calib_data.value()->data;
+      auto in_outs = data.at(symbol_);
+      LOG(INFO) << in_outs;
+      auto inputs = in_outs["inputs"];
+      auto outputs = in_outs["outputs"];
+      for (auto& input : inputs) {
+        auto data = (float*)input->data;
+        LOG(INFO) << data[0];
+      }
+    }
     Expr expr = GetRef<Expr>(cn);
     std::string name;
     const CallNode* call = cn;
@@ -467,6 +482,9 @@ class DNNLJSONSerializer : public backend::contrib::JSONSerializer {
     SetCallNodeAttribute(node, call);
     return AddNode(node, GetRef<Expr>(cn));
   }
+
+ private:
+  const std::string& symbol_;
 };
 
 /*!

@@ -30,6 +30,7 @@
 #include <tvm/relay/analysis.h>
 #include <tvm/relay/expr.h>
 #include <tvm/relay/expr_functor.h>
+#include <tvm/relay/transform.h>
 
 namespace tvm {
 namespace relay {
@@ -134,14 +135,14 @@ IRModule GetCalibrateModule(IRModule module) {
 
 class OutputMapper : public ExprRewriter {
  public:
-  OutputMapper(Map<GlobalVar, Array<Integer>>* output_map, const IRModule& module, size_t* offset)
+  OutputMapper(Map<String, Array<Integer>>* output_map, const IRModule& module, size_t* offset)
       : output_map_(output_map), module_(module), offset_(offset) {}
 
   Expr Rewrite_(const CallNode* call, const Expr& post) final {
     if (call->op->IsInstance<GlobalVarNode>()) {
       auto var = Downcast<GlobalVar>(call->op);
       CHECK(module_->ContainGlobalVar(var->name_hint)) << "Function " << var << " is not defined";
-      CHECK_EQ(output_map_->count(var), 0)
+      CHECK_EQ(output_map_->count(var->name_hint), 0)
           << "Repeated function call " << var << " is not supported.";
       auto func = Downcast<Function>(module_->Lookup(var));
       // we only handle functions with Compiler attribute set
@@ -160,7 +161,7 @@ class OutputMapper : public ExprRewriter {
         } else {
           info.push_back(Integer(1));
         }
-        output_map_->Set(var, info);
+        output_map_->Set(var->name_hint, info);
         // calculate the offset for the next function
         *offset_ = *offset_ + call->args.size() + out_size;
       }
@@ -169,13 +170,13 @@ class OutputMapper : public ExprRewriter {
   }
 
  private:
-  Map<GlobalVar, Array<Integer>>* output_map_;
+  Map<String, Array<Integer>>* output_map_;
   const IRModule& module_;
   size_t* offset_;
 };
 
-Map<GlobalVar, Array<Integer>> GetCalibrateOutputMap(const IRModule& module) {
-  Map<GlobalVar, Array<Integer>> output_map;
+Map<String, Array<Integer>> GetCalibrateOutputMap(const IRModule& module) {
+  Map<String, Array<Integer>> output_map;
   size_t offset = 0;
   auto glob_funcs = module->functions;
   for (const auto& pair : glob_funcs) {

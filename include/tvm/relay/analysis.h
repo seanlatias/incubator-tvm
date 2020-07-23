@@ -252,7 +252,7 @@ TVM_DLL IRModule GetCalibrateModule(IRModule mod);
  *
  * \return The mapping between a subgraph name and its postition in the output tuple.
  */
-TVM_DLL Map<GlobalVar, Array<Integer>> GetCalibrateOutputMap(const IRModule& mod);
+TVM_DLL Map<String, Array<Integer>> GetCalibrateOutputMap(const IRModule& mod);
 
 }  // namespace relay
 }  // namespace tvm
