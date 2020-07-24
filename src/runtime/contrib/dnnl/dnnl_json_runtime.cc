@@ -160,6 +160,13 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
     std::vector<std::string> str_strides = node.GetAttr<std::vector<std::string>>("strides");
     std::vector<std::string> str_padding = node.GetAttr<std::vector<std::string>>("padding");
     dnnl::memory::dim groups = std::stoi(node.GetAttr<std::vector<std::string>>("groups")[0]);
+    std::vector<std::string> src_attrs = node.GetAttr<std::vector<std::string>>("src_scale");
+    std::vector<std::string> weights_attrs = node.GetAttr<std::vector<std::string>>("weights_scale");
+    float src_scale = std::stof(src_attrs[0]);
+    float weights_scale = std::stof(weights_attrs[0]);
+    float bias_scale = src_scale * weights_scale;
+    float dst_scale = 1 / bias_scale;
+    LOG(INFO) << src_scale << " " << weights_scale;
 
     dnnl::memory::dim N = input_shape[0],       // batch size
         IC = input_shape[1],                    // input channels
@@ -191,10 +198,10 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
 
     // Memory descriptions.
     //auto conv_src_md = dnnl::memory::desc(src_dims, dt::f32, tag::any);
-    auto conv_src_md = dnnl::memory::desc(src_dims, dt::s8, tag::any);
+    auto conv_src_md = dnnl::memory::desc(src_dims, dt::u8, tag::any);
     auto conv_weights_md = dnnl::memory::desc(weights_dims, dt::s8, tag::any);
-    auto conv_bias_md = dnnl::memory::desc(bias_dims, dt::s8, tag::any);
-    auto conv_dst_md = dnnl::memory::desc(dst_dims, dt::s8, tag::nchw);
+    auto conv_bias_md = dnnl::memory::desc(bias_dims, dt::s32, tag::any);
+    auto conv_dst_md = dnnl::memory::desc(dst_dims, dt::s32, tag::nchw);
 
     LOG(INFO) << "AAAA";
 
@@ -247,7 +254,7 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
     // Push to the network.
     auto conv_src_memory = dnnl::memory(conv2d_prim_desc.src_desc(), engine_);
     const int src_mask = 0;
-    const std::vector<float> src_scales = {1.0f};
+    const std::vector<float> src_scales = {src_scale};
     dnnl::primitive_attr src_attr;
     src_attr.set_output_scales(src_mask, src_scales);
     auto src_reorder_pd = dnnl::reorder::primitive_desc(engine_, conv2d_src_memory.get_desc(), engine_, conv_src_memory.get_desc(), src_attr);
@@ -258,7 +265,7 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
 
     auto conv_weights_memory = dnnl::memory(conv2d_prim_desc.weights_desc(), engine_);
     const int weights_mask = 0;
-    const std::vector<float> weights_scales = {1.0f};
+    const std::vector<float> weights_scales = {weights_scale};
     dnnl::primitive_attr weights_attr;
     weights_attr.set_output_scales(weights_mask, weights_scales);
     auto weights_reorder_pd = dnnl::reorder::primitive_desc(engine_, conv2d_weights_memory.get_desc(), engine_, conv_weights_memory.get_desc(), weights_attr);
@@ -269,7 +276,7 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
 
     auto conv_bias_memory = dnnl::memory(conv2d_prim_desc.bias_desc(), engine_);
     const int bias_mask = 0;
-    const std::vector<float> bias_scales = {1.0f};
+    const std::vector<float> bias_scales = {bias_scale};
     dnnl::primitive_attr bias_attr;
     bias_attr.set_output_scales(bias_mask, bias_scales);
     auto bias_reorder_pd = dnnl::reorder::primitive_desc(engine_, conv2d_bias_memory.get_desc(), engine_, conv_bias_memory.get_desc(), bias_attr);
@@ -283,9 +290,9 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
 
     LOG(INFO) << "HHHH";
 
-    auto conv_dst_memory = dnnl::memory({{dst_dims}, dt::s8, tag::nchw}, engine_);
+    auto conv_dst_memory = dnnl::memory({{dst_dims}, dt::s32, tag::nchw}, engine_);
     const int dst_mask = 0;
-    const std::vector<float> dst_scales = {1.0f};
+    const std::vector<float> dst_scales = {dst_scale};
     dnnl::primitive_attr dst_attr;
     dst_attr.set_output_scales(dst_mask, dst_scales);
     auto dst_reorder_pd = dnnl::reorder::primitive_desc(engine_, conv_dst_memory.get_desc(), engine_, conv2d_dst_memory.get_desc(), dst_attr);

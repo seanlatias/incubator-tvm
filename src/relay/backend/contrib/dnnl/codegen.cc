@@ -435,20 +435,6 @@ class DNNLJSONSerializer : public backend::contrib::JSONSerializer {
   DNNLJSONSerializer(const std::string& symbol, const Expr& expr) : JSONSerializer(symbol, expr), symbol_(symbol) {}
 
   std::vector<JSONGraphNodeEntry> VisitExpr_(const CallNode* cn) override {
-    // get calibration data and perform quantization
-    auto pass_ctx = tvm::transform::PassContext::Current();
-    auto calib_data = pass_ctx->GetConfig<CalibrationData>("relay.calibration_data");
-    if (calib_data.defined()) {
-      auto data = calib_data.value()->data;
-      auto in_outs = data.at(symbol_);
-      LOG(INFO) << in_outs;
-      auto inputs = in_outs["inputs"];
-      auto outputs = in_outs["outputs"];
-      for (auto& input : inputs) {
-        auto data = (float*)input->data;
-        LOG(INFO) << data[0];
-      }
-    }
     Expr expr = GetRef<Expr>(cn);
     std::string name;
     const CallNode* call = cn;
@@ -480,6 +466,60 @@ class DNNLJSONSerializer : public backend::contrib::JSONSerializer {
                                                 "kernel", /* op_type_ */
                                                 inputs, 1 /* num_outputs_ */);
     SetCallNodeAttribute(node, call);
+
+    // get calibration data and perform quantization
+    auto pass_ctx = tvm::transform::PassContext::Current();
+    auto calib_data = pass_ctx->GetConfig<CalibrationData>("relay.calibration_data");
+    if (calib_data.defined()) {
+      auto data = calib_data.value()->data;
+      auto in_outs = data.at(symbol_);
+      LOG(INFO) << in_outs;
+      auto inputs = in_outs["inputs"];
+      auto outputs = in_outs["outputs"];
+      if (name == "nn.conv2d") {
+        CHECK_EQ(inputs.size(), 2) << "Incorrect number of arguements for nn.conv2d";
+        // handle input feature maps
+        auto srcs = (float*)inputs[0]->data;
+        size_t num_elem = 1;
+        for (size_t i = 0; i < (size_t)inputs[0]->ndim; i++) {
+          num_elem *= inputs[0]->shape[i];
+        }
+        float min = srcs[0];
+        float max = srcs[0];
+        for (size_t i = 1; i < num_elem; i++) {
+          min = (min < srcs[i]) ? min : srcs[i];
+          max = (max > srcs[i]) ? max : srcs[i];
+        }
+        // assume the min is always greater than 0
+        float src_scale = 255 / max;
+        // handle weights
+        auto weights = (float*)inputs[1]->data;
+        num_elem = 1;
+        for (size_t i = 0; i < (size_t)inputs[1]->ndim; i++) {
+          num_elem *= inputs[1]->shape[i];
+        }
+        min = weights[0];
+        max = weights[0];
+        for (size_t i = 1; i < num_elem; i++) {
+          min = (min < weights[i]) ? min : weights[i];
+          max = (max > weights[i]) ? max : weights[i];
+        }
+        // assume the min is always greater than 0
+        float weights_scale = 127 / max;
+        // add the attribute to the node
+        std::vector<std::string> src_scales;
+        src_scales.push_back(std::to_string(src_scale));
+        std::vector<dmlc::any> src_attr;
+        src_attr.emplace_back(src_scales);
+        node->SetAttr("src_scale", src_attr);
+        std::vector<std::string> weights_scales;
+        weights_scales.push_back(std::to_string(weights_scale));
+        std::vector<dmlc::any> weights_attr;
+        weights_attr.emplace_back(weights_scales);
+        node->SetAttr("weights_scale", weights_attr);
+      }
+    }
+
     return AddNode(node, GetRef<Expr>(cn));
   }
 
