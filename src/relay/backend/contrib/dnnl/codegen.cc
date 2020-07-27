@@ -427,9 +427,26 @@ class DNNLModuleCodegen : public CSourceModuleCodegenBase {
 
 #else  // DNNL JSON runtime
 
+std::tuple<float, float> CollectMinMax(const runtime::NDArray tensor) {
+  float* data = (float*)tensor->data;
+  size_t size = 1;
+  for (size_t i = 0; i < (size_t)tensor->ndim; i++) {
+    size *= tensor->shape[i];
+  }
+  float min = data[0];
+  float max = data[1];
+  for (size_t i = 1; i < size; i++) {
+    min = (min < data[i]) ? min : data[i];
+    max = (max > data[i]) ? max : data[i];
+  }
+  return std::make_tuple(min, max);
+}
+
+
 class DNNLJSONSerializer : public backend::contrib::JSONSerializer {
   using JSONGraphNode = tvm::runtime::json::JSONGraphNode;
   using JSONGraphNodeEntry = tvm::runtime::json::JSONGraphNodeEntry;
+  using JSONGraphObjectPtr = std::shared_ptr<JSONGraphNode>;
 
  public:
   DNNLJSONSerializer(const std::string& symbol, const Expr& expr) : JSONSerializer(symbol, expr), symbol_(symbol) {}
@@ -478,45 +495,16 @@ class DNNLJSONSerializer : public backend::contrib::JSONSerializer {
       auto outputs = in_outs["outputs"];
       if (name == "nn.conv2d") {
         CHECK_EQ(inputs.size(), 2) << "Incorrect number of arguements for nn.conv2d";
-        // handle input feature maps
-        auto srcs = (float*)inputs[0]->data;
-        size_t num_elem = 1;
-        for (size_t i = 0; i < (size_t)inputs[0]->ndim; i++) {
-          num_elem *= inputs[0]->shape[i];
-        }
-        float min = srcs[0];
-        float max = srcs[0];
-        for (size_t i = 1; i < num_elem; i++) {
-          min = (min < srcs[i]) ? min : srcs[i];
-          max = (max > srcs[i]) ? max : srcs[i];
-        }
-        // assume the min is always greater than 0
-        float src_scale = 255 / max;
-        // handle weights
-        auto weights = (float*)inputs[1]->data;
-        num_elem = 1;
-        for (size_t i = 0; i < (size_t)inputs[1]->ndim; i++) {
-          num_elem *= inputs[1]->shape[i];
-        }
-        min = weights[0];
-        max = weights[0];
-        for (size_t i = 1; i < num_elem; i++) {
-          min = (min < weights[i]) ? min : weights[i];
-          max = (max > weights[i]) ? max : weights[i];
-        }
-        // assume the min is always greater than 0
-        float weights_scale = 127 / max;
-        // add the attribute to the node
-        std::vector<std::string> src_scales;
-        src_scales.push_back(std::to_string(src_scale));
-        std::vector<dmlc::any> src_attr;
-        src_attr.emplace_back(src_scales);
-        node->SetAttr("src_scale", src_attr);
-        std::vector<std::string> weights_scales;
-        weights_scales.push_back(std::to_string(weights_scale));
-        std::vector<dmlc::any> weights_attr;
-        weights_attr.emplace_back(weights_scales);
-        node->SetAttr("weights_scale", weights_attr);
+        float src_scale = 255 / std::get<1>(CollectMinMax(inputs[0]));
+        float weights_scale = 127 / std::get<1>(CollectMinMax(inputs[1]));
+        AddScaleAttr(node, src_scale, "src");
+        AddScaleAttr(node, weights_scale, "weights");
+      } else if (name == "nn.dense") {
+        CHECK_EQ(inputs.size(), 2) << "Incorrect number of arguements for nn.dense";
+        float data_scale = 127 / std::get<1>(CollectMinMax(inputs[0]));
+        float weights_scale = 127 / std::get<1>(CollectMinMax(inputs[1]));
+        AddScaleAttr(node, data_scale, "data");
+        AddScaleAttr(node, weights_scale, "weights");
       }
     }
 
@@ -525,6 +513,14 @@ class DNNLJSONSerializer : public backend::contrib::JSONSerializer {
 
  private:
   const std::string& symbol_;
+
+  void AddScaleAttr(JSONGraphObjectPtr node, float scale, std::string name) {
+    std::vector<std::string> values;
+    values.push_back(std::to_string(scale));
+    std::vector<dmlc::any> attr;
+    attr.emplace_back(values);
+    node->SetAttr(name+"_scale", attr);
+  }
 };
 
 /*!

@@ -148,6 +148,14 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
     return entry_out_mem_[eid].first;
   }
 
+  dnnl::primitive BuildReorderPrimitive(dnnl::memory src_memory, dnnl::memory dst_memory, const int mask, float scale) {
+    const std::vector<float> scales = {scale};
+    dnnl::primitive_attr attr;
+    attr.set_output_scales(mask, scales);
+    auto reorder_pd = dnnl::reorder::primitive_desc(engine_, src_memory.get_desc(), engine_, dst_memory.get_desc(), attr);
+    return dnnl::reorder(reorder_pd);
+  }
+
   void Conv2d(const size_t& nid, const bool has_relu = false, const bool has_bias = false,
               const bool quantize = false) {
     auto node = nodes_[nid];
@@ -160,13 +168,23 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
     std::vector<std::string> str_strides = node.GetAttr<std::vector<std::string>>("strides");
     std::vector<std::string> str_padding = node.GetAttr<std::vector<std::string>>("padding");
     dnnl::memory::dim groups = std::stoi(node.GetAttr<std::vector<std::string>>("groups")[0]);
-    std::vector<std::string> src_attrs = node.GetAttr<std::vector<std::string>>("src_scale");
-    std::vector<std::string> weights_attrs = node.GetAttr<std::vector<std::string>>("weights_scale");
-    float src_scale = std::stof(src_attrs[0]);
-    float weights_scale = std::stof(weights_attrs[0]);
-    float bias_scale = src_scale * weights_scale;
-    float dst_scale = 1 / bias_scale;
-    LOG(INFO) << src_scale << " " << weights_scale;
+    // For quantized operations.
+    bool is_quantized = false;
+    std::vector<std::string> src_attrs;
+    std::vector<std::string> weights_attrs;
+    float src_scale;
+    float weights_scale;
+    float bias_scale;
+    float dst_scale;
+    if (node.HasAttr("src_scale") && node.HasAttr(weights_scale)) {
+      is_quantized = true;
+      src_attrs = node.GetAttr<std::vector<std::string>>("src_scale");
+      weights_attrs = node.GetAttr<std::vector<std::string>>("weights_scale");
+      src_scale = std::stof(src_attrs[0]);
+      weights_scale = std::stof(weights_attrs[0]);
+      bias_scale = src_scale * weights_scale;
+      dst_scale = 1 / bias_scale;
+    }
 
     dnnl::memory::dim N = input_shape[0],       // batch size
         IC = input_shape[1],                    // input channels
@@ -197,20 +215,15 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
     dnnl::memory::dims padding_dims_r = {PH_R, PW_R};
 
     // Memory descriptions.
-    //auto conv_src_md = dnnl::memory::desc(src_dims, dt::f32, tag::any);
-    auto conv_src_md = dnnl::memory::desc(src_dims, dt::u8, tag::any);
-    auto conv_weights_md = dnnl::memory::desc(weights_dims, dt::s8, tag::any);
-    auto conv_bias_md = dnnl::memory::desc(bias_dims, dt::s32, tag::any);
-    auto conv_dst_md = dnnl::memory::desc(dst_dims, dt::s32, tag::nchw);
-
-    LOG(INFO) << "AAAA";
+    auto conv_src_md = dnnl::memory::desc(src_dims, is_quantized ? dt::u8 : dt::f32 , tag::any);
+    auto conv_weights_md = dnnl::memory::desc(weights_dims, is_quantized ? dt::s8 : dt::f32, tag::any);
+    auto conv_bias_md = dnnl::memory::desc(bias_dims, is_quantized ? dt::s32 : dt::f32, tag::any);
+    auto conv_dst_md = dnnl::memory::desc(dst_dims, is_quantized ? dt::s32 : dt::f32, tag::nchw);
 
     // Covn2d description.
     auto conv_desc = dnnl::convolution_forward::desc(
         dnnl::prop_kind::forward_inference, dnnl::algorithm::convolution_direct, conv_src_md,
         conv_weights_md, conv_bias_md, conv_dst_md, strides_dims, padding_dims_l, padding_dims_r);
-
-    LOG(INFO) << "BBBB";
 
     // Enable ReLU
     dnnl::primitive_attr attr;
@@ -221,9 +234,6 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
     }
 
     auto conv2d_prim_desc = dnnl::convolution_forward::primitive_desc(conv_desc, attr, engine_);
-
-    LOG(INFO) << "CCCC";
-
 
 
     // Data memory.
@@ -249,8 +259,6 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
     JSONGraphNodeEntry out_entry(nid, 0);
     auto conv2d_dst_memory = BindDNNLMemory(out_entry, {{dst_dims}, dt::f32, tag::nchw});
 
-    LOG(INFO) << "DDDD";
-
     // Push to the network.
     auto conv_src_memory = dnnl::memory(conv2d_prim_desc.src_desc(), engine_);
     const int src_mask = 0;
@@ -261,8 +269,6 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
     auto src_reorder = dnnl::reorder(src_reorder_pd);
     net_.push_back(src_reorder);
 
-    LOG(INFO) << "EEEE";
-
     auto conv_weights_memory = dnnl::memory(conv2d_prim_desc.weights_desc(), engine_);
     const int weights_mask = 0;
     const std::vector<float> weights_scales = {weights_scale};
@@ -271,8 +277,6 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
     auto weights_reorder_pd = dnnl::reorder::primitive_desc(engine_, conv2d_weights_memory.get_desc(), engine_, conv_weights_memory.get_desc(), weights_attr);
     auto weights_reorder = dnnl::reorder(weights_reorder_pd);
     net_.push_back(weights_reorder);
-
-    LOG(INFO) << "FFFF";
 
     auto conv_bias_memory = dnnl::memory(conv2d_prim_desc.bias_desc(), engine_);
     const int bias_mask = 0;
@@ -283,12 +287,8 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
     auto bias_reorder = dnnl::reorder(bias_reorder_pd);
     net_.push_back(bias_reorder);
 
-    LOG(INFO) << "GGGG";
-
     auto conv = dnnl::convolution_forward(conv2d_prim_desc);
     net_.push_back(conv);
-
-    LOG(INFO) << "HHHH";
 
     auto conv_dst_memory = dnnl::memory({{dst_dims}, dt::s32, tag::nchw}, engine_);
     const int dst_mask = 0;
@@ -298,8 +298,6 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
     auto dst_reorder_pd = dnnl::reorder::primitive_desc(engine_, conv_dst_memory.get_desc(), engine_, conv2d_dst_memory.get_desc(), dst_attr);
     auto dst_reorder = dnnl::reorder(dst_reorder_pd);
     net_.push_back(dst_reorder);
-
-    LOG(INFO) << "IIII";
 
     net_args_.push_back({{DNNL_ARG_FROM, conv2d_src_memory}, {DNNL_ARG_TO, conv_src_memory}});
     net_args_.push_back({{DNNL_ARG_FROM, conv2d_weights_memory}, {DNNL_ARG_TO, conv_weights_memory}});
@@ -322,6 +320,14 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
     auto weight_entry = node.GetInputs()[1];
     dnnl::memory::dims input_shape = nodes_[data_entry.id_].GetOpShape()[data_entry.index_];
     dnnl::memory::dims weight_shape = nodes_[weight_entry.id_].GetOpShape()[weight_entry.index_];
+    std::vector<std::string> data_attrs = node.GetAttr<std::vector<std::string>>("data_scale");
+    std::vector<std::string> weights_attrs = node.GetAttr<std::vector<std::string>>("weights_scale");
+    float data_scale = std::stof(data_attrs[0]);
+    float weights_scale = std::stof(weights_attrs[0]);
+    float bias_scale = data_scale * weights_scale;
+    //float dst_scale = 1 / bias_scale;
+    float dst_scale = 1;
+    LOG(INFO) << data_scale << " " << weights_scale << " " << dst_scale;
 
     dnnl::memory::dim B = input_shape[0],  // batch size
         IC = input_shape[1],               // input channels
@@ -336,8 +342,8 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
     // Memory descriptions.
     auto data_md = dnnl::memory::desc({data_dims, dt::s8, tag::nc});
     auto weight_md = dnnl::memory::desc({weight_dims, dt::s8, tag::nc});
-    auto bias_md = dnnl::memory::desc({bias_dims, dt::s8, tag::x});
-    auto dst_md = dnnl::memory::desc({out_dims, dt::s8, tag::nc});
+    auto bias_md = dnnl::memory::desc({bias_dims, dt::s32, tag::x});
+    auto dst_md = dnnl::memory::desc({out_dims, dt::s32, tag::nc});
 
     // Dense description.
     auto dense_desc = dnnl::inner_product_forward::desc(dnnl::prop_kind::forward_inference, data_md,
@@ -357,7 +363,7 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
 
     auto dense_src_memory = dnnl::memory(dense_prim_desc.src_desc(), engine_);
     const int src_mask = 0;
-    const std::vector<float> src_scales = {1.0f};
+    const std::vector<float> src_scales = {100};
     dnnl::primitive_attr src_attr;
     src_attr.set_output_scales(src_mask, src_scales);
     auto src_reorder_pd = dnnl::reorder::primitive_desc(engine_, data_memory.get_desc(), engine_, dense_src_memory.get_desc(), src_attr);
@@ -366,7 +372,7 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
 
     auto dense_weights_memory = dnnl::memory(dense_prim_desc.weights_desc(), engine_);
     const int weights_mask = 0;
-    const std::vector<float> weights_scales = {1.0f};
+    const std::vector<float> weights_scales = {100};
     dnnl::primitive_attr weights_attr;
     weights_attr.set_output_scales(weights_mask, weights_scales);
     auto weights_reorder_pd = dnnl::reorder::primitive_desc(engine_, weight_memory.get_desc(), engine_, dense_weights_memory.get_desc(), weights_attr);
@@ -375,7 +381,7 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
 
     auto dense_bias_memory = dnnl::memory(dense_prim_desc.bias_desc(), engine_);
     const int bias_mask = 0;
-    const std::vector<float> bias_scales = {1.0f};
+    const std::vector<float> bias_scales = {bias_scale};
     dnnl::primitive_attr bias_attr;
     bias_attr.set_output_scales(bias_mask, bias_scales);
     auto bias_reorder_pd = dnnl::reorder::primitive_desc(engine_, bias_memory.get_desc(), engine_, dense_bias_memory.get_desc(), bias_attr);
@@ -384,9 +390,9 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
 
     net_.push_back(dense);
 
-    auto dense_dst_memory = dnnl::memory({{out_dims}, dt::s8, tag::nc}, engine_);
+    auto dense_dst_memory = dnnl::memory({{out_dims}, dt::s32, tag::nc}, engine_);
     const int dst_mask = 0;
-    const std::vector<float> dst_scales = {1.0f};
+    const std::vector<float> dst_scales = {dst_scale};
     dnnl::primitive_attr dst_attr;
     dst_attr.set_output_scales(dst_mask, dst_scales);
     auto dst_reorder_pd = dnnl::reorder::primitive_desc(engine_, dense_dst_memory.get_desc(), engine_, dst_memory.get_desc(), dst_attr);
