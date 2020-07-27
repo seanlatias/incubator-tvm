@@ -522,19 +522,6 @@ class DNNLJSONSerializer : public backend::contrib::JSONSerializer {
     node->SetAttr(name+"_scale", attr);
   }
 };
-
-/*!
- * \brief Get the external symbol of the Relay function name.
- *
- * \param func The provided function.
- *
- * \return An external symbol.
- */
-std::string GetExtSymbol(const Function& func) {
-  const auto name_node = func->GetAttr<String>(tvm::attr::kGlobalSymbol);
-  CHECK(name_node.defined()) << "Fail to retrieve external symbol.";
-  return std::string(name_node.value());
-}
 #endif
 
 /*!

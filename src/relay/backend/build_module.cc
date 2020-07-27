@@ -27,7 +27,6 @@
 #include <tvm/relay/qnn/transform.h>
 #include <tvm/relay/transform.h>
 #include <tvm/runtime/device_api.h>
-#include <tvm/runtime/vm.h>
 
 #include <memory>
 
@@ -276,6 +275,7 @@ class RelayBuildModule : public runtime::ModuleNode {
       }
     });
     pass_seqs.push_back(transform::EliminateCommonSubexpr(fskip));
+    pass_seqs.push_back(transform::SimplifyExpr());
     pass_seqs.push_back(transform::CombineParallelConv2D(3));
     pass_seqs.push_back(transform::CombineParallelDense(3));
     pass_seqs.push_back(transform::CombineParallelBatchMatmul(3));
