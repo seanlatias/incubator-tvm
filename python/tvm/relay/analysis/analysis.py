@@ -355,7 +355,7 @@ def search_fc_transpose(expr):
     return ret
 
 
-def get_calibration_data(mod, data):
+def get_calibration_data(mod, data, save_internal=False, save_list=[], target="llvm"):
     """Get the calibration data of a given relay graph
 
     This pass uses the graph runtime to get the calibration data of a module, which
@@ -377,16 +377,18 @@ def get_calibration_data(mod, data):
     data : Dict[str, NDArray]
         The input data for running the module
 
+    save_internal : Bool
+        Whether to save the internal tensors
+
     Returns
     -------
     data : Dict[tvm.relay.GlobalVar, Dict[str, NDArray]]
     """
+    mod = _ffi_api.get_calibrate_module(mod, save_internal, save_list)
     output_map = _ffi_api.get_calibrate_output_map(mod)
-
-    mod = _ffi_api.get_calibrate_module(mod)
     mod = transform.Inline()(mod)
 
-    ref_ex = build_module.create_executor("graph", mod=mod, ctx=cpu(0))
+    ref_ex = build_module.create_executor("graph", mod=mod, ctx=cpu(0), target=target)
     ref_res = ref_ex.evaluate()(**data)
 
     calib_data = {}

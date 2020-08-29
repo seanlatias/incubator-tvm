@@ -427,20 +427,6 @@ class DNNLModuleCodegen : public CSourceModuleCodegenBase {
 
 #else  // DNNL JSON runtime
 
-std::tuple<float, float> CollectMinMax(const runtime::NDArray tensor) {
-  float* data = (float*)tensor->data;
-  size_t size = 1;
-  for (size_t i = 0; i < (size_t)tensor->ndim; i++) {
-    size *= tensor->shape[i];
-  }
-  float min = data[0];
-  float max = data[1];
-  for (size_t i = 1; i < size; i++) {
-    min = (min < data[i]) ? min : data[i];
-    max = (max > data[i]) ? max : data[i];
-  }
-  return std::make_tuple(min, max);
-}
 
 
 class DNNLJSONSerializer : public backend::contrib::JSONSerializer {
@@ -449,7 +435,7 @@ class DNNLJSONSerializer : public backend::contrib::JSONSerializer {
   using JSONGraphObjectPtr = std::shared_ptr<JSONGraphNode>;
 
  public:
-  DNNLJSONSerializer(const std::string& symbol, const Expr& expr) : JSONSerializer(symbol, expr), symbol_(symbol) {}
+  DNNLJSONSerializer(const std::string& symbol, const Expr& expr) : JSONSerializer(symbol, expr), symbol_(symbol), expr_(expr) {}
 
   std::vector<JSONGraphNodeEntry> VisitExpr_(const CallNode* cn) override {
     Expr expr = GetRef<Expr>(cn);
@@ -467,6 +453,8 @@ class DNNLJSONSerializer : public backend::contrib::JSONSerializer {
       } else if (name == "dnnl.conv2d_relu") {
         call = GetRootCall(fn->body.as<CallNode>(), 1, {"nn.conv2d", "nn.relu"});
         CHECK(call->op.as<OpNode>()) << "Not op node";
+      } else if (name == "dnnl.batch_norm_relu") {
+        call = GetRootCall(fn->body.as<CallNode>(), 1, {"nn.batch_norm", "nn.relu"});
       } else {
         LOG(FATAL) << "Unrecognized DNNL pattern: " << name;
       }
@@ -490,36 +478,68 @@ class DNNLJSONSerializer : public backend::contrib::JSONSerializer {
     if (calib_data.defined()) {
       auto data = calib_data.value()->data;
       auto in_outs = data.at(symbol_);
-      LOG(INFO) << in_outs;
       auto inputs = in_outs["inputs"];
       auto outputs = in_outs["outputs"];
+      // locate the arguments
+      auto func = Downcast<Function>(expr_);
+      runtime::NDArray input_data;
       if (name == "nn.conv2d") {
-        CHECK_EQ(inputs.size(), 2) << "Incorrect number of arguements for nn.conv2d";
-        float src_scale = 255 / std::get<1>(CollectMinMax(inputs[0]));
-        float weights_scale = 127 / std::get<1>(CollectMinMax(inputs[1]));
-        AddScaleAttr(node, src_scale, "src");
-        AddScaleAttr(node, weights_scale, "weights");
+        // skip quantization for the first layer
+        if (output_counter_ > 0) {
+          // calculate the quantization scale for input fmaps
+          auto input_data = outputs[output_counter_-1];
+          auto min_max = CollectMinMax(input_data);
+          float min_val = std::get<0>(min_max);
+          float max_val = std::get<1>(min_max);
+          float range = (min_val < 0) ? 127. : 255.;
+          float src_scale = range / max_val;
+          // add additional attributes to the node
+          AddAttr<float>(node, src_scale, "src_scale");
+          AddAttr<bool>(node, true, "is_quantized");
+          AddAttr<bool>(node, true, "is_dequantized");
+        }
+        output_counter_++;
+      } else if (name == "nn.relu") {
+        output_counter_++;
       } else if (name == "nn.dense") {
-        CHECK_EQ(inputs.size(), 2) << "Incorrect number of arguements for nn.dense";
-        float data_scale = 127 / std::get<1>(CollectMinMax(inputs[0]));
-        float weights_scale = 127 / std::get<1>(CollectMinMax(inputs[1]));
-        AddScaleAttr(node, data_scale, "data");
-        AddScaleAttr(node, weights_scale, "weights");
+        output_counter_++;
+      } else if (name == "nn.batch_norm") {
+        output_counter_++;
       }
     }
-
     return AddNode(node, GetRef<Expr>(cn));
   }
 
  private:
   const std::string& symbol_;
+  const Expr& expr_;
+  size_t output_counter_{0};
+  bool is_quantized_{false};
 
-  void AddScaleAttr(JSONGraphObjectPtr node, float scale, std::string name) {
+  // add additional attribute to a JSON node
+  template <typename T>
+  void AddAttr(JSONGraphObjectPtr node, T value, std::string name) {
     std::vector<std::string> values;
-    values.push_back(std::to_string(scale));
+    values.push_back(std::to_string(value));
     std::vector<dmlc::any> attr;
     attr.emplace_back(values);
-    node->SetAttr(name+"_scale", attr);
+    node->SetAttr(name, attr);
+  }
+
+  // helper function for collecting the min/max values
+  std::tuple<float, float> CollectMinMax(const runtime::NDArray tensor) {
+    float* data = (float*)tensor->data;
+    size_t size = 1;
+    for (size_t i = 0; i < (size_t)tensor->ndim; i++) {
+      size *= tensor->shape[i];
+    }
+    float min = data[0];
+    float max = data[0];
+    for (size_t i = 1; i < size; i++) {
+      min = (min < data[i]) ? min : data[i];
+      max = (max > data[i]) ? max : data[i];
+    }
+    return std::make_tuple(min, max);
   }
 };
 #endif

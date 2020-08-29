@@ -241,9 +241,11 @@ TVM_DLL std::unordered_map<const Object*, size_t> GetExprRefCount(const Expr& bo
  *
  * \param mod The module to be updated.
  *
+ * \param save_internal_tensor Whether to save internal tensor values.
+ *
  * \return The updated module.
  */
-TVM_DLL IRModule GetCalibrateModule(IRModule mod);
+TVM_DLL IRModule GetCalibrateModule(IRModule mod, const bool save_internal_tensor, const Array<String>& save_op_list);
 
 /*!
  * \brief Get the output map between subgrpahs and its inputs/output.

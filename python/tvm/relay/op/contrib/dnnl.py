@@ -33,7 +33,7 @@ it is supported. For example:
 check the attributes of the op and decide if it should be offloaded to DNNL.
 """
 import tvm.ir
-from ...dataflow_pattern import wildcard, is_op
+from ...dataflow_pattern import wildcard, is_op, is_tuple_get_item
 from .register import register_pattern_table
 
 
@@ -62,26 +62,30 @@ _register_external_op_helper("nn.batch_norm")
 _register_external_op_helper("nn.conv2d")
 _register_external_op_helper("nn.dense")
 _register_external_op_helper("nn.relu")
-_register_external_op_helper("add")
-_register_external_op_helper("subtract")
-_register_external_op_helper("multiply")
+#_register_external_op_helper("add")
+#_register_external_op_helper("subtract")
+#_register_external_op_helper("multiply")
 
 
-def make_pattern(with_bias=True):
+def make_pattern(with_bias=False, with_scale=False):
     data = wildcard()
     weight = wildcard()
+    mult = wildcard()
     bias = wildcard()
     conv = is_op('nn.conv2d')(data, weight)
     if with_bias:
-        conv_out = is_op('add')(conv, bias)
+        if with_scale:
+            conv = is_op('multiply')(conv, mult)
+        conv = is_op('add')(conv, bias)
     else:
-        conv_out = conv
-    return is_op('nn.relu')(conv_out)
+        conv = conv
+    return is_op('nn.relu')(conv)
 
 
 @register_pattern_table("dnnl")
 def pattern_table():
+    conv2d_scale_bias_relu_pat = ("dnnl.conv2d_scale_bias_relu", make_pattern(with_bias=True, with_scale=True))
     conv2d_bias_relu_pat = ("dnnl.conv2d_bias_relu", make_pattern(with_bias=True))
-    conv2d_relu_pat = ("dnnl.conv2d_relu", make_pattern(with_bias=False))
-    dnnl_patterns = [conv2d_bias_relu_pat, conv2d_relu_pat]
+    conv2d_relu_pat = ("dnnl.conv2d_relu", make_pattern())
+    dnnl_patterns = [conv2d_scale_bias_relu_pat, conv2d_bias_relu_pat, conv2d_relu_pat]
     return dnnl_patterns
